@@ -11,31 +11,51 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 
 async def buscar_stock():
+    urls = [
+        "https://blox-fruits-api.onrender.com/api/bloxfruits/stock",
+        "https://api.bloxfruits.app/stock",
+    ]
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get("https://blox-fruits-api.onrender.com/api/bloxfruits/stock", timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    return await resp.json()
+            for url in urls:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            # Verifica se tem dados úteis
+                            if data and data != {"stock": {}}:
+                                return data
+                except Exception:
+                    continue
     except Exception:
         pass
     return None
 
 async def montar_mensagem(data):
     if not data:
-        return "⚠️ Não foi possível buscar o stock agora. Tente mais tarde."
+        # Fallback: posta o link direto
+        return (
+            "🍎 **STOCK DO BLOX FRUITS**\n\n"
+            "Veja as frutas disponíveis agora:\n"
+            "🔗 https://fruityblox.com/stock\n\n"
+            f"_Atualizado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}_"
+        )
 
     linhas = ["🍎 **STOCK DO BLOX FRUITS**\n"]
 
-    if "normal" in data:
+    normal = data.get("normal") or data.get("stock", {}).get("normal")
+    mirage = data.get("mirage") or data.get("stock", {}).get("mirage")
+
+    if normal:
         linhas.append("**NORMAL STOCK:**")
-        for fruta in data["normal"]:
+        for fruta in normal:
             nome = fruta.get("name", "?")
             preco = fruta.get("price", 0)
             linhas.append(f"🍈 {nome} — $ {preco:,}".replace(",", "."))
 
-    if "mirage" in data:
+    if mirage:
         linhas.append("\n**MIRAGE STOCK:**")
-        for fruta in data["mirage"]:
+        for fruta in mirage:
             nome = fruta.get("name", "?")
             preco = fruta.get("price", 0)
             linhas.append(f"🌊 {nome} — $ {preco:,}".replace(",", "."))
@@ -52,7 +72,7 @@ async def loop_4h():
         mensagem = await montar_mensagem(data)
         if canal:
             await canal.send(mensagem)
-        await asyncio.sleep(4 * 60 * 60)  # Aguarda 4 horas
+        await asyncio.sleep(4 * 60 * 60)
 
 @client.event
 async def on_ready():

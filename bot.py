@@ -1,9 +1,9 @@
 import discord
 import asyncio
-import aiohttp
 import os
-import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timezone, timedelta
+from playwright.async_api import async_playwright
 
 TOKEN = os.environ["DISCORD_TOKEN"]
 CANAL_ID = 1514471338042065038
@@ -21,98 +21,104 @@ EMOJIS = {
     "shadow":"🌙","venom":"🐍","dragon":"🐉","leopard":"🐆","kitsune":"🦊",
     "ghost":"👻","sound":"🎵","gravity":"🌀","pain":"😈","control":"🎮",
     "mammoth":"🦣","gas":"☁️","t-rex":"🦕","portal":"🌀","soul":"👻",
-    "diamond":"💎","barrier":"🛡️","kilo":"⚖️",
+    "diamond":"💎","barrier":"🛡️","kilo":"⚖️","spring":"🌿",
 }
 
-PRECOS = {
-    "Rocket": 5000, "Spin": 7500, "Blade": 30000, "Bomb": 80000,
-    "Smoke": 100000, "Spike": 180000, "Chop": 30000, "Spring": 60000,
-    "Kilo": 5000, "Ice": 350000, "Sand": 420000, "Dark": 500000,
-    "Diamond": 600000, "Light": 650000, "Love": 1300000, "Rubber": 750000,
-    "Barrier": 800000, "Magma": 850000, "Quake": 1000000, "Buddha": 1200000,
-    "Phoenix": 1400000, "Rumble": 2100000, "Pain": 2400000, "Gravity": 2500000,
-    "Dough": 2800000, "Shadow": 2900000, "Venom": 3000000, "Control": 3200000,
-    "Soul": 3400000, "Dragon": 3500000, "Leopard": 5000000, "Kitsune": 8000000,
-    "Gas": 600000, "Ghost": 940000, "Sound": 1700000, "Mammoth": 2000000,
-}
+async def buscar_stock_playwright():
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox","--disable-setuid-sandbox"])
+            page = await browser.new_page()
+            await page.goto("https://fruityblox.com/stock", wait_until="networkidle", timeout=30000)
+            await page.wait_for_timeout(3000)
 
-async def buscar_stock_bloxverse():
-    """Tenta buscar stock da API do Blox Stock bot (Blox Verse)."""
-    apis = [
-        "https://blox-fruits-api.onrender.com/api/bloxfruits/stock",
-        "https://api.blox-verse.xyz/stock",
-        "https://bloxfruits.app/api/stock",
-    ]
-    for url in apis:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                    if resp.status == 200:
-                        text = await resp.text()
-                        data = json.loads(text)
-                        # Tenta diferentes formatos
-                        for key in ["normal", "stock", "fruits", "data"]:
-                            if key in data and data[key]:
-                                return data
-        except Exception:
-            continue
-    return None
+            content = await page.content()
+            await browser.close()
+
+            # Extrai seções Normal e Mirage
+            normal_frutas = []
+            mirage_frutas = []
+
+            # Padrão para capturar frutas: nome + preço em Beli
+            # O site mostra: NomeNomeTipo5.000R 50 (nome repetido + tipo + preço)
+            # Vamos usar uma abordagem mais simples: pegar texto das seções
+            
+            # Tenta extrair via regex do HTML renderizado
+            # Frutas aparecem como links: /items/nome com preço próximo
+            frutas_raw = re.findall(
+                r'href="/items/([^"]+)"[^>]*>.*?(\d[\d,.]+)\s*R\s*\d',
+                content, re.DOTALL
+            )
+
+            # Determina se é normal ou mirage pela posição no HTML
+            normal_idx = content.find("Normal")
+            mirage_idx = content.find("Mirage")
+
+            for match in re.finditer(
+                r'href="/items/([^"]+)".*?(\d[\d,.]+)\s*R\s*\d',
+                content, re.DOTALL
+            ):
+                nome_slug = match.group(1)
+                preco_str = match.group(2).replace(".", "").replace(",", "")
+                nome = nome_slug.capitalize()
+                try:
+                    preco = int(preco_str)
+                except:
+                    preco = 0
+                pos = match.start()
+                if pos < mirage_idx or mirage_idx == -1:
+                    normal_frutas.append({"name": nome, "price": preco})
+                else:
+                    mirage_frutas.append({"name": nome, "price": preco})
+
+            return normal_frutas, mirage_frutas
+
+    except Exception as e:
+        print(f"Erro Playwright: {e}")
+        return [], []
 
 def segundos_ate_proximo_reset():
     agora = datetime.now(timezone.utc)
-    hora_atual = agora.hour
     for h in RESET_HOURS_UTC:
-        if h > hora_atual:
+        if h > agora.hour:
             proximo = agora.replace(hour=h, minute=0, second=15, microsecond=0)
             return max((proximo - agora).total_seconds(), 1)
-    from datetime import timedelta
     proximo = (agora + timedelta(days=1)).replace(hour=0, minute=0, second=15, microsecond=0)
     return max((proximo - agora).total_seconds(), 1)
 
-def montar_mensagem_com_dados(normal, mirage):
+def montar_mensagem(normal, mirage):
     agora = datetime.now().strftime('%d/%m/%Y às %H:%M')
     linhas = [f"🍎 **STOCK DO BLOX FRUITS** — {agora}\n"]
 
     if normal:
         linhas.append("**NORMAL STOCK:**")
         for f in normal:
-            nome = f.get("name", "?")
-            preco = f.get("price", PRECOS.get(nome, 0))
+            nome = f["name"]
+            preco = f["price"]
             emoji = EMOJIS.get(nome.lower(), "🍈")
             linhas.append(f"{emoji} {nome} — $ {preco:,}".replace(",", "."))
 
     if mirage:
         linhas.append("\n**MIRAGE STOCK:**")
         for f in mirage:
-            nome = f.get("name", "?")
-            preco = f.get("price", PRECOS.get(nome, 0))
+            nome = f["name"]
+            preco = f["price"]
             emoji = EMOJIS.get(nome.lower(), "🍈")
             linhas.append(f"{emoji} {nome} — $ {preco:,}".replace(",", "."))
 
-    linhas.append("\n🔗 fruityblox.com/stock")
+    if not normal and not mirage:
+        linhas.append("Veja as frutas disponíveis agora:")
+        linhas.append("🔗 https://fruityblox.com/stock")
+    else:
+        linhas.append("\n🔗 fruityblox.com/stock")
+
     return "\n".join(linhas)
 
-def montar_mensagem_fallback():
-    agora = datetime.now().strftime('%d/%m/%Y às %H:%M')
-    return (
-        f"🍎 **STOCK DO BLOX FRUITS** — {agora}\n\n"
-        "O stock acabou de atualizar!\n"
-        "Veja as frutas disponíveis agora:\n"
-        "🔗 https://fruityblox.com/stock"
-    )
-
 async def postar_stock(canal):
-    data = await buscar_stock_bloxverse()
-
-    if data:
-        normal = data.get("normal") or data.get("stock", {}).get("normal") or []
-        mirage = data.get("mirage") or data.get("stock", {}).get("mirage") or []
-        if normal or mirage:
-            msg = montar_mensagem_com_dados(normal, mirage)
-            await canal.send(msg)
-            return
-
-    await canal.send(montar_mensagem_fallback())
+    normal, mirage = await buscar_stock_playwright()
+    msg = montar_mensagem(normal, mirage)
+    await canal.send(msg)
+    print(f"✅ Postado: {len(normal)} normal, {len(mirage)} mirage")
 
 async def loop_stock():
     await client.wait_until_ready()
@@ -121,7 +127,7 @@ async def loop_stock():
 
     while not client.is_closed():
         espera = segundos_ate_proximo_reset()
-        print(f"⏳ Próximo post em {int(espera)}s ({int(espera/60)} min)")
+        print(f"⏳ Próximo post em {int(espera)}s")
         await asyncio.sleep(espera)
         await postar_stock(canal)
 

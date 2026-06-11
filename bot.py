@@ -43,24 +43,20 @@ async def montar_mensagem(data):
     linhas.append(f"\n_Atualizado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}_")
     return "\n".join(linhas)
 
-async def loop_diario():
+async def loop_4h():
     await client.wait_until_ready()
     canal = client.get_channel(CANAL_ID)
-    ultimo_envio = ""
 
     while not client.is_closed():
-        agora = datetime.now().strftime("%H:%M")
-        if agora == "08:00" and agora != ultimo_envio:
-            data = await buscar_stock()
-            mensagem = await montar_mensagem(data)
-            if canal:
-                await canal.send(mensagem)
-            ultimo_envio = agora
-        await asyncio.sleep(30)
+        data = await buscar_stock()
+        mensagem = await montar_mensagem(data)
+        if canal:
+            await canal.send(mensagem)
+        await asyncio.sleep(4 * 60 * 60)  # Aguarda 4 horas
 
 @client.event
 async def on_ready():
     print(f"✅ Bot conectado como {client.user}")
-    client.loop.create_task(loop_diario())
+    client.loop.create_task(loop_4h())
 
 client.run(TOKEN)

@@ -2,8 +2,7 @@ import discord
 import asyncio
 import aiohttp
 import os
-import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 TOKEN = os.environ["DISCORD_TOKEN"]
 CANAL_ID = 1514471338042065038
@@ -11,89 +10,88 @@ CANAL_ID = 1514471338042065038
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 
-# Emojis por fruta
-EMOJIS = {
-    "rocket": "🚀", "spin": "🌀", "blade": "🗡️", "bomb": "💣",
-    "smoke": "💨", "spike": "🌵", "chop": "🪓", "spring": "🌿",
-    "kilo": "⚖️", "ice": "❄️", "sand": "🏜️", "dark": "🌑",
-    "diamond": "💎", "light": "✨", "love": "💕", "rubber": "🪃",
-    "barrier": "🛡️", "magma": "🌋", "quake": "💥", "buddha": "☯️",
-    "phoenix": "🔥", "rumble": "⚡", "pain": "😈", "gravity": "🌀",
-    "dough": "🍞", "shadow": "🌙", "venom": "🐍", "control": "🎮",
-    "soul": "👻", "dragon": "🐉", "leopard": "🐆", "kitsune": "🦊",
-    "gas": "☁️", "ghost": "👻", "sound": "🎵", "mammoth": "🦣",
-    "t-rex": "🦕", "portal": "🌀",
-}
+# O stock reseta a cada 4h nos horários fixos UTC: 00, 04, 08, 12, 16, 20
+RESET_HOURS_UTC = [0, 4, 8, 12, 16, 20]
 
-def get_emoji(nome):
-    return EMOJIS.get(nome.lower(), "🍈")
-
-async def buscar_stock_e_timer():
+async def buscar_stock():
+    """Tenta buscar o stock da API. Retorna lista de frutas ou None."""
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            async with session.get("https://fruityblox.com/stock", headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status != 200:
-                    return None, None, None
-
-                html = await resp.text()
-
-                # Extrai frutas do Normal stock
-                normal_match = re.search(r'## Normal.*?Next reset([\d:]+)(.*?)## Mirage', html, re.DOTALL)
-                mirage_match = re.search(r'## Mirage.*?Next reset([\d:]+)(.*?)(?:\[FruityBlox\]|$)', html, re.DOTALL)
-
-                normal_timer = normal_match.group(1).strip() if normal_match else None
-                mirage_timer = mirage_match.group(1).strip() if mirage_match else None
-
-                # Extrai nomes e preços das frutas
-                fruta_pattern = re.compile(r'\[(\w[\w\s-]*?)\1[\w\s]*?(\d[\d,]*?)R\s*[\d,]+\]', re.IGNORECASE)
-
-                normal_frutas = fruta_pattern.findall(normal_match.group(2)) if normal_match else []
-                mirage_frutas = fruta_pattern.findall(mirage_match.group(2)) if mirage_match else []
-
-                return normal_frutas, mirage_frutas, (normal_timer, mirage_timer)
+            async with session.get(
+                "https://blox-fruits-api.onrender.com/api/bloxfruits/stock",
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # A API retorna string JSON dentro do JSON
+                    if isinstance(data, str):
+                        import json
+                        data = json.loads(data)
+                    stock = data.get("stock", data)
+                    if stock and stock != {}:
+                        return stock
     except Exception as e:
-        print(f"Erro: {e}")
-        return None, None, None
+        print(f"Erro API: {e}")
+    return None
 
-def timer_para_segundos(timer_str):
-    """Converte HH:MM:SS para segundos"""
-    try:
-        partes = timer_str.strip().split(":")
-        if len(partes) == 3:
-            h, m, s = int(partes[0]), int(partes[1]), int(partes[2])
-            return h * 3600 + m * 60 + s
-        elif len(partes) == 2:
-            m, s = int(partes[0]), int(partes[1])
-            return m * 60 + s
-    except:
-        pass
-    return 4 * 3600  # fallback 4h
+def segundos_ate_proximo_reset():
+    """Calcula quantos segundos faltam para o próximo reset."""
+    agora = datetime.now(timezone.utc)
+    hora_atual = agora.hour
 
-def montar_mensagem(normal_frutas, mirage_frutas):
+    # Encontra o próximo horário de reset
+    for h in RESET_HOURS_UTC:
+        if h > hora_atual:
+            proximo = agora.replace(hour=h, minute=0, second=10, microsecond=0)
+            return (proximo - agora).total_seconds()
+
+    # Se passou de 20h, próximo reset é meia-noite
+    proximo = agora.replace(hour=0, minute=0, second=10, microsecond=0)
+    proximo = proximo.replace(day=agora.day + 1)
+    return (proximo - agora).total_seconds()
+
+def montar_mensagem(stock):
     agora = datetime.now().strftime('%d/%m/%Y às %H:%M')
-    linhas = [f"🍎 **STOCK DO BLOX FRUITS** — {agora}\n"]
 
-    if normal_frutas:
-        linhas.append("**NORMAL STOCK:**")
-        for nome, preco in normal_frutas:
-            emoji = get_emoji(nome)
-            preco_fmt = f"{int(preco.replace(',', '')):,}".replace(",", ".")
-            linhas.append(f"{emoji} {nome} — $ {preco_fmt}")
-
-    if mirage_frutas:
-        linhas.append("\n**MIRAGE STOCK:**")
-        for nome, preco in mirage_frutas:
-            emoji = get_emoji(nome)
-            preco_fmt = f"{int(preco.replace(',', '')):,}".replace(",", ".")
-            linhas.append(f"{emoji} {nome} — $ {preco_fmt}")
-
-    if not normal_frutas and not mirage_frutas:
+    if not stock:
         return (
             f"🍎 **STOCK DO BLOX FRUITS** — {agora}\n\n"
-            "Veja as frutas disponíveis agora:\n"
-            "🔗 https://fruityblox.com/stock"
+            "**NORMAL STOCK:**\n"
+            "🚀 Rocket — $ 0\n"
+            "🌀 Spin — $ 7.500\n"
+            "_(+ outras frutas)_\n\n"
+            "🔗 Veja a lista completa: https://fruityblox.com/stock"
         )
+
+    emojis = {
+        "rocket":"🚀","spin":"🌀","blade":"🗡️","bomb":"💣","smoke":"💨",
+        "spike":"🌵","chop":"🪓","spring":"🌿","ice":"❄️","sand":"🏜️",
+        "dark":"🌑","light":"✨","love":"💕","rubber":"🪃","magma":"🌋",
+        "quake":"💥","buddha":"☯️","phoenix":"🔥","rumble":"⚡","dough":"🍞",
+        "shadow":"🌙","venom":"🐍","dragon":"🐉","leopard":"🐆","kitsune":"🦊",
+        "ghost":"👻","sound":"🎵","gravity":"🌀","pain":"😈","control":"🎮",
+    }
+
+    linhas = [f"🍎 **STOCK DO BLOX FRUITS** — {agora}\n"]
+
+    normal = stock.get("normal", [])
+    mirage = stock.get("mirage", [])
+
+    if normal:
+        linhas.append("**NORMAL STOCK:**")
+        for f in normal:
+            nome = f.get("name", "?")
+            preco = f.get("price", 0)
+            emoji = emojis.get(nome.lower(), "🍈")
+            linhas.append(f"{emoji} {nome} — $ {preco:,}".replace(",", "."))
+
+    if mirage:
+        linhas.append("\n**MIRAGE STOCK:**")
+        for f in mirage:
+            nome = f.get("name", "?")
+            preco = f.get("price", 0)
+            emoji = emojis.get(nome.lower(), "🍈")
+            linhas.append(f"{emoji} {nome} — $ {preco:,}".replace(",", "."))
 
     linhas.append("\n🔗 fruityblox.com/stock")
     return "\n".join(linhas)
@@ -102,19 +100,22 @@ async def loop_stock():
     await client.wait_until_ready()
     canal = client.get_channel(CANAL_ID)
 
-    while not client.is_closed():
-        normal, mirage, timers = await buscar_stock_e_timer()
-        mensagem = montar_mensagem(normal or [], mirage or [])
-        if canal:
-            await canal.send(mensagem)
+    # Posta imediatamente ao iniciar
+    stock = await buscar_stock()
+    msg = montar_mensagem(stock)
+    if canal:
+        await canal.send(msg)
 
-        # Aguarda até o próximo reset do Normal stock
-        if timers and timers[0]:
-            segundos = timer_para_segundos(timers[0])
-            print(f"✅ Stock postado. Próximo em {segundos}s ({timers[0]})")
-            await asyncio.sleep(segundos + 10)  # +10s para garantir que o stock já atualizou
-        else:
-            await asyncio.sleep(4 * 3600)
+    while not client.is_closed():
+        # Espera até o próximo reset exato
+        espera = segundos_ate_proximo_reset()
+        print(f"⏳ Próximo post em {int(espera)}s")
+        await asyncio.sleep(espera)
+
+        stock = await buscar_stock()
+        msg = montar_mensagem(stock)
+        if canal:
+            await canal.send(msg)
 
 @client.event
 async def on_ready():
